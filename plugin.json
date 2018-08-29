@@ -4,7 +4,7 @@
   "SystemName": "CurrencyExchange.BOT",
   "Version": "1.22",
   "SupportedVersions": [ "4.10" ],
-  "Author": "nopCommerce team",
+  "Author": "iAunty",
   "DisplayOrder": 1,
   "FileName": "Nop.Plugin.ExchangeRate.BotExchange.dll",
   "Description": "This plugin allows getting exchange rates from BOT (Back Of Taiwan)"
