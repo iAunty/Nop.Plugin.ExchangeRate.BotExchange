@@ -36,6 +36,7 @@ namespace Nop.Plugin.ExchangeRate.EcbExchange
 
         /// <summary>
         /// Gets currency live rates
+        /// Rate Url is : https://rate.bot.com.tw/xrt?Lang=zh-TW
         /// </summary>
         /// <param name="exchangeRateCurrencyCode">Exchange rate currency code</param>
         /// <returns>Exchange rates</returns>
