@@ -4,8 +4,10 @@ using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Xml;
+using HtmlAgilityPack;
 using Nop.Core;
 using Nop.Core.Plugins;
+using Nop.Plugin.ExchangeRate.BotExchange;
 using Nop.Services.Directory;
 using Nop.Services.Localization;
 using Nop.Services.Logging;
@@ -45,68 +47,69 @@ namespace Nop.Plugin.ExchangeRate.EcbExchange
             if (exchangeRateCurrencyCode == null)
                 throw new ArgumentNullException(nameof(exchangeRateCurrencyCode));
 
-            //add euro with rate 1
-            var ratesToEuro = new List<Core.Domain.Directory.ExchangeRate>
+            //add twd with rate 1
+            var ratesToTwd = new List<Core.Domain.Directory.ExchangeRate>
             {
                 new Core.Domain.Directory.ExchangeRate
                 {
-                    CurrencyCode = "EUR",
+                    CurrencyCode = "TWD",
                     Rate = 1,
                     UpdatedOn = DateTime.UtcNow
                 }
             };
 
-            //get exchange rates to euro from European Central Bank
-            var request = (HttpWebRequest)WebRequest.Create("http://www.ecb.int/stats/eurofxref/eurofxref-daily.xml");
-            try
-            {
-                using (var response = request.GetResponse())
+            //collect rate
+            var currencyList = new HtmlWeb().Load("https://rate.bot.com.tw/xrt?Lang=zh-TW").DocumentNode.SelectNodes("//tbody/tr");
+            var rateResult = new List<BotRateObject>();
+            foreach(var rate in currencyList)
+            { 
+                string currency = rate.SelectSingleNode("td[@data-table='幣別']/div/*[3]").InnerText.Trim();
+                string[] splitCurrencyString = null;
+                splitCurrencyString = currency.Split("(");
+                currency = splitCurrencyString[0];
+                string currencyCode = splitCurrencyString[1].Replace(")", String.Empty);
+                string cashBuying = rate.SelectSingleNode("td[@data-table='本行現金買入']").InnerText;
+                string cashSelling= rate.SelectSingleNode("td[@data-table='本行現金賣出']").InnerText;
+                string spotBuying = rate.SelectSingleNode("td[@data-table='本行即期買入']").InnerText;
+                string spotSelling = rate.SelectSingleNode("td[@data-table='本行即期賣出']").InnerText;
+                //add to result list
+                rateResult.Add(new BotRateObject
                 {
-                    //load XML document
-                    var document = new XmlDocument();
-                    document.Load(response.GetResponseStream());
-
-                    //add namespaces
-                    var namespaces = new XmlNamespaceManager(document.NameTable);
-                    namespaces.AddNamespace("ns", "http://www.ecb.int/vocabulary/2002-08-01/eurofxref");
-                    namespaces.AddNamespace("gesmes", "http://www.gesmes.org/xml/2002-08-01");
-
-                    //get daily rates
-                    var dailyRates = document.SelectSingleNode("gesmes:Envelope/ns:Cube/ns:Cube", namespaces);
-                    if (!DateTime.TryParseExact(dailyRates.Attributes["time"].Value, "yyyy-MM-dd", null, DateTimeStyles.None, out DateTime updateDate))
-                        updateDate = DateTime.UtcNow;
-
-                    foreach (XmlNode currency in dailyRates.ChildNodes)
-                    {
-                        //get rate
-                        if (!decimal.TryParse(currency.Attributes["rate"].Value, out decimal currencyRate))
-                            continue;
-
-                        ratesToEuro.Add(new Core.Domain.Directory.ExchangeRate()
-                        {
-                            CurrencyCode = currency.Attributes["currency"].Value,
-                            Rate = currencyRate,
-                            UpdatedOn = updateDate
-                        });
-                    }
-                }
-            }
-            catch (WebException ex)
-            {
-                _logger.Error("ECB exchange rate provider", ex);
+                    Currency = currency,
+                    CurrencyCode = currencyCode,
+                    CashBuying = (!cashBuying.Contains("-")) ? Convert.ToDecimal(cashBuying) : new decimal?(),
+                    CashSelling = (!cashSelling.Contains("-")) ? Convert.ToDecimal(cashSelling) : new decimal?(),
+                    SpotBuying = (!spotBuying.Contains("-")) ? Convert.ToDecimal(spotBuying) : new decimal?(),
+                    SpotSelling = (!spotSelling.Contains("-")) ? Convert.ToDecimal(spotSelling) : new decimal?(),
+                });
             }
 
+            //converr rate to nop currency rate object
+            foreach(var rate in rateResult)
+            { 
+                var averageRate = rate.SpotBuying!=null
+                    ? (1 / (( rate.SpotBuying.Value + rate.SpotSelling.Value ) / 2))
+                    : (1 / (( rate.CashBuying.Value + rate.CashBuying.Value ) / 2));
+
+                ratesToTwd.Add(new Core.Domain.Directory.ExchangeRate
+                { 
+                    CurrencyCode = rate.CurrencyCode,
+                    Rate = averageRate,
+                    UpdatedOn = DateTime.UtcNow,
+                });
+            }
+            
             //return result for the euro
-            if (exchangeRateCurrencyCode.Equals("eur", StringComparison.InvariantCultureIgnoreCase))
-                return ratesToEuro;
+            if (exchangeRateCurrencyCode.Equals("twd", StringComparison.InvariantCultureIgnoreCase))
+                return ratesToTwd;
 
-            //use only currencies that are supported by ECB
-            var exchangeRateCurrency = ratesToEuro.FirstOrDefault(rate => rate.CurrencyCode.Equals(exchangeRateCurrencyCode, StringComparison.InvariantCultureIgnoreCase));
+            //use only currencies that are supported by BOT
+            var exchangeRateCurrency = ratesToTwd.FirstOrDefault(rate => rate.CurrencyCode.Equals(exchangeRateCurrencyCode, StringComparison.InvariantCultureIgnoreCase));
             if (exchangeRateCurrency == null)
-                throw new NopException(_localizationService.GetResource("Plugins.ExchangeRate.EcbExchange.Error"));
+                throw new NopException(_localizationService.GetResource("Plugins.ExchangeRate.BotExchange.Error"));
 
             //return result for the selected (not euro) currency
-            return ratesToEuro.Select(rate => new Core.Domain.Directory.ExchangeRate
+            return ratesToTwd.Select(rate => new Core.Domain.Directory.ExchangeRate
             {
                 CurrencyCode = rate.CurrencyCode,
                 Rate = Math.Round(rate.Rate / exchangeRateCurrency.Rate, 4),
@@ -120,7 +123,7 @@ namespace Nop.Plugin.ExchangeRate.EcbExchange
         public override void Install()
         {
             //locales
-            _localizationService.AddOrUpdatePluginLocaleResource("Plugins.ExchangeRate.EcbExchange.Error", "You can use ECB (European central bank) exchange rate provider only when the primary exchange rate currency is supported by ECB");
+            _localizationService.AddOrUpdatePluginLocaleResource("Plugins.ExchangeRate.BotExchange.Error", "You can use BOT (Back of taiwan) exchange rate provider only when the primary exchange rate currency is supported by BOT");
 
             base.Install();
         }
@@ -131,7 +134,7 @@ namespace Nop.Plugin.ExchangeRate.EcbExchange
         public override void Uninstall()
         {
             //locales
-            _localizationService.DeletePluginLocaleResource("Plugins.ExchangeRate.EcbExchange.Error");
+            _localizationService.DeletePluginLocaleResource("Plugins.ExchangeRate.BotExchange.Error");
 
             base.Uninstall();
         }
